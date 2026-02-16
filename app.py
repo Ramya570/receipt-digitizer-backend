@@ -1,303 +1,164 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-import os
-
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
     jwt_required,
-    get_jwt_identity
+    get_jwt_identity,
 )
-
-from services.ocr_service import extract_text_from_image, parse_receipt
-
+from flask_cors import CORS
+import bcrypt
+import os
 from database.db import (
     init_db,
     create_user,
-    authenticate_user,
+    get_user_by_username,
     save_receipt,
-    get_all_receipts,
-    get_receipt_by_id,
-    update_receipt,
-    delete_receipt,
-    get_analytics_summary
+    get_receipts_by_user,
+    delete_receipt_by_id,
+    get_total_spending_by_user,
 )
+from services.ocr_service import extract_receipt_data
 
 app = Flask(__name__)
 CORS(app)
 
-# ===============================
 # JWT Configuration
-# ===============================
 app.config["JWT_SECRET_KEY"] = "super-secret-key-change-this"
 jwt = JWTManager(app)
 
-UPLOAD_FOLDER = "uploads"
-
-if not os.path.exists(UPLOAD_FOLDER):
-    os.makedirs(UPLOAD_FOLDER)
+# Initialize Database
+init_db()
 
 
-# ===============================
-# Home
-# ===============================
-@app.route("/", methods=["GET"])
-def home():
-    return jsonify({
-        "message": "Receipt Digitizer Backend Running 🚀"
-    })
+# =========================
+# AUTH ROUTES
+# =========================
 
-
-# ===============================
-# Register
-# ===============================
 @app.route("/register", methods=["POST"])
 def register():
-
     data = request.get_json()
 
     username = data.get("username")
     password = data.get("password")
 
     if not username or not password:
-        return jsonify({
-            "success": False,
-            "message": "Username and password required"
-        }), 400
+        return jsonify({"success": False, "message": "Missing username or password"}), 400
 
-    user_id = create_user(username, password)
+    hashed_pw = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
 
-    if not user_id:
-        return jsonify({
-            "success": False,
-            "message": "User already exists"
-        }), 400
+    result = create_user(username, hashed_pw.decode("utf-8"))
 
-    return jsonify({
-        "success": True,
-        "message": "User registered successfully"
-    })
+    if not result:
+        return jsonify({"success": False, "message": "User already exists"}), 409
+
+    return jsonify({"success": True, "message": "User registered successfully"}), 201
 
 
-# ===============================
-# Login
-# ===============================
 @app.route("/login", methods=["POST"])
 def login():
-
     data = request.get_json()
 
     username = data.get("username")
     password = data.get("password")
 
-    user_id = authenticate_user(username, password)
+    user = get_user_by_username(username)
 
-    if not user_id:
-        return jsonify({
-            "success": False,
-            "message": "Invalid credentials"
-        }), 401
+    if not user:
+        return jsonify({"success": False, "message": "Invalid credentials"}), 401
 
-    access_token = create_access_token(identity=user_id)
+    stored_password = user["password"]
 
-    return jsonify({
-        "success": True,
-        "access_token": access_token
-    })
+    if not bcrypt.checkpw(password.encode("utf-8"), stored_password.encode("utf-8")):
+        return jsonify({"success": False, "message": "Invalid credentials"}), 401
+
+    access_token = create_access_token(identity=user["id"])
+
+    return jsonify({"success": True, "access_token": access_token}), 200
 
 
-# ===============================
-# Upload Receipt (CREATE)
-# ===============================
+# =========================
+# RECEIPT ROUTES
+# =========================
+
 @app.route("/upload", methods=["POST"])
 @jwt_required()
 def upload_receipt():
-
-    user_id = get_jwt_identity()
+    current_user_id = get_jwt_identity()
 
     if "file" not in request.files:
-        return jsonify({"error": "No file part in request"}), 400
+        return jsonify({"success": False, "message": "No file uploaded"}), 400
 
     file = request.files["file"]
 
-    if file.filename == "":
-        return jsonify({"error": "No file selected"}), 400
+    upload_folder = "uploads"
+    os.makedirs(upload_folder, exist_ok=True)
 
-    try:
-        filepath = os.path.join(UPLOAD_FOLDER, file.filename)
-        file.save(filepath)
+    file_path = os.path.join(upload_folder, file.filename)
+    file.save(file_path)
 
-        extracted_text = extract_text_from_image(filepath)
-        structured_data = parse_receipt(extracted_text)
+    extracted_data = extract_receipt_data(file_path)
 
-        receipt_id = save_receipt(user_id, structured_data)
+    total = extracted_data.get("structured_data", {}).get("total")
 
-        os.remove(filepath)
+    if total:
+        save_receipt(current_user_id, file.filename, float(total))
 
-        return jsonify({
-            "success": True,
-            "receipt_id": receipt_id,
-            "structured_data": structured_data
-        })
-
-    except Exception as e:
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+    return jsonify(extracted_data), 200
 
 
-# ===============================
-# Get All Receipts (READ)
-# ===============================
 @app.route("/receipts", methods=["GET"])
 @jwt_required()
-def fetch_receipts():
+def get_receipts():
+    current_user_id = get_jwt_identity()
 
-    user_id = get_jwt_identity()
+    receipts = get_receipts_by_user(current_user_id)
 
-    page = request.args.get("page", default=1, type=int)
-    limit = request.args.get("limit", default=10, type=int)
-    store = request.args.get("store", default=None, type=str)
-
-    receipts = get_all_receipts(user_id, page, limit, store)
-
-    formatted = []
-    for r in receipts:
-        formatted.append({
-            "id": r[0],
-            "store": r[2],
-            "phone": r[3],
-            "total": r[4],
-            "calculated_subtotal": r[5],
-            "total_matches": bool(r[6]),
-            "created_at": r[7]
-        })
-
-    return jsonify({
-        "success": True,
-        "page": page,
-        "limit": limit,
-        "count": len(formatted),
-        "receipts": formatted
-    })
+    return jsonify({"success": True, "receipts": receipts}), 200
 
 
-# ===============================
-# Get Single Receipt (READ ONE)
-# ===============================
-@app.route("/receipt/<int:receipt_id>", methods=["GET"])
-@jwt_required()
-def fetch_receipt(receipt_id):
-
-    user_id = get_jwt_identity()
-
-    result = get_receipt_by_id(user_id, receipt_id)
-
-    if not result:
-        return jsonify({
-            "success": False,
-            "message": "Receipt not found"
-        }), 404
-
-    receipt, items = result
-
-    formatted_items = []
-    for item in items:
-        formatted_items.append({
-            "name": item[0],
-            "quantity": item[1],
-            "price": item[2]
-        })
-
-    return jsonify({
-        "success": True,
-        "receipt": {
-            "id": receipt[0],
-            "store": receipt[2],
-            "phone": receipt[3],
-            "total": receipt[4],
-            "calculated_subtotal": receipt[5],
-            "total_matches": bool(receipt[6]),
-            "created_at": receipt[7],
-            "items": formatted_items
-        }
-    })
-
-
-# ===============================
-# Update Receipt (UPDATE)
-# ===============================
-@app.route("/receipt/<int:receipt_id>", methods=["PUT"])
-@jwt_required()
-def edit_receipt(receipt_id):
-
-    user_id = get_jwt_identity()
-    data = request.get_json()
-
-    if not data:
-        return jsonify({
-            "success": False,
-            "message": "No data provided"
-        }), 400
-
-    updated = update_receipt(user_id, receipt_id, data)
-
-    if not updated:
-        return jsonify({
-            "success": False,
-            "message": "Receipt not found"
-        }), 404
-
-    return jsonify({
-        "success": True,
-        "message": "Receipt updated successfully"
-    })
-
-
-# ===============================
-# Delete Receipt (DELETE)
-# ===============================
 @app.route("/receipt/<int:receipt_id>", methods=["DELETE"])
 @jwt_required()
-def remove_receipt(receipt_id):
+def delete_receipt(receipt_id):
+    current_user_id = get_jwt_identity()
 
-    user_id = get_jwt_identity()
+    result = delete_receipt_by_id(receipt_id, current_user_id)
 
-    deleted = delete_receipt(user_id, receipt_id)
+    if not result:
+        return jsonify({"success": False, "message": "Receipt not found"}), 404
 
-    if deleted == 0:
-        return jsonify({
-            "success": False,
-            "message": "Receipt not found"
-        }), 404
-
-    return jsonify({
-        "success": True,
-        "message": "Receipt deleted successfully"
-    })
+    return jsonify({"success": True, "message": "Receipt deleted"}), 200
 
 
-# ===============================
-# Analytics Summary
-# ===============================
-@app.route("/analytics/summary", methods=["GET"])
+# =========================
+# ANALYTICS ROUTE
+# =========================
+
+@app.route("/analytics", methods=["GET"])
 @jwt_required()
-def analytics_summary():
+def analytics():
+    current_user_id = get_jwt_identity()
 
-    user_id = get_jwt_identity()
-
-    summary = get_analytics_summary(user_id)
+    total_spent = get_total_spending_by_user(current_user_id)
 
     return jsonify({
         "success": True,
-        "analytics": summary
-    })
+        "total_spent": total_spent
+    }), 200
 
 
-# ===============================
-# Run App
-# ===============================
+# =========================
+# HEALTH CHECK ROUTE
+# =========================
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({"message": "Receipt Digitizer API is running"}), 200
+
+
+# =========================
+# RUN APP (Render Compatible)
+# =========================
+
 if __name__ == "__main__":
-    init_db()
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
