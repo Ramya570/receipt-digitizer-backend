@@ -1,13 +1,13 @@
 import sqlite3
-from datetime import datetime
-import bcrypt
+import os
 
 DB_NAME = "receipts.db"
 
 
-# ====================================
-# Initialize Database
-# ====================================
+# =========================
+# DATABASE INITIALIZATION
+# =========================
+
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -16,8 +16,8 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password BLOB
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
         )
     """)
 
@@ -25,26 +25,11 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS receipts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            store TEXT,
-            phone TEXT,
+            user_id INTEGER NOT NULL,
+            filename TEXT NOT NULL,
             total REAL,
-            calculated_subtotal REAL,
-            total_matches BOOLEAN,
-            created_at TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        )
-    """)
-
-    # Items table
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            receipt_id INTEGER,
-            name TEXT,
-            quantity INTEGER,
-            price REAL,
-            FOREIGN KEY(receipt_id) REFERENCES receipts(id)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     """)
 
@@ -52,289 +37,101 @@ def init_db():
     conn.close()
 
 
-# ====================================
-# Create User
-# ====================================
+# =========================
+# USER FUNCTIONS
+# =========================
+
 def create_user(username, password):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-
-    hashed_password = bcrypt.hashpw(
-        password.encode("utf-8"),
-        bcrypt.gensalt()
-    )
-
     try:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+
         cursor.execute(
             "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, hashed_password)
+            (username, password)
         )
+
         conn.commit()
-        user_id = cursor.lastrowid
-    except sqlite3.IntegrityError:
         conn.close()
-        return None
+        return True
+
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_user_by_username(username):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
+    user = cursor.fetchone()
 
     conn.close()
-    return user_id
+
+    return dict(user) if user else None
 
 
-# ====================================
-# Authenticate User
-# ====================================
-def authenticate_user(username, password):
+# =========================
+# RECEIPT FUNCTIONS
+# =========================
+
+def save_receipt(user_id, filename, total):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
     cursor.execute(
-        "SELECT id, password FROM users WHERE username = ?",
-        (username,)
+        "INSERT INTO receipts (user_id, filename, total) VALUES (?, ?, ?)",
+        (user_id, filename, total)
     )
-
-    user = cursor.fetchone()
-    conn.close()
-
-    if user and bcrypt.checkpw(password.encode("utf-8"), user[1]):
-        return user[0]
-
-    return None
-
-
-# ====================================
-# Save Receipt (CREATE)
-# ====================================
-def save_receipt(user_id, data):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        INSERT INTO receipts 
-        (user_id, store, phone, total, calculated_subtotal, total_matches, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (
-        user_id,
-        data.get("store"),
-        data.get("phone"),
-        float(data.get("total")) if data.get("total") else 0,
-        data.get("calculated_subtotal"),
-        data.get("total_matches"),
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    ))
-
-    receipt_id = cursor.lastrowid
-
-    for item in data.get("items", []):
-        cursor.execute("""
-            INSERT INTO items (receipt_id, name, quantity, price)
-            VALUES (?, ?, ?, ?)
-        """, (
-            receipt_id,
-            item["name"],
-            item["quantity"],
-            item["price"]
-        ))
 
     conn.commit()
     conn.close()
 
-    return receipt_id
 
-
-# ====================================
-# Get All Receipts (READ + Pagination)
-# ====================================
-def get_all_receipts(user_id, page=1, limit=10, store=None):
+def get_receipts_by_user(user_id):
     conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    offset = (page - 1) * limit
-
-    if store:
-        cursor.execute("""
-            SELECT * FROM receipts
-            WHERE user_id = ? AND store LIKE ?
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-        """, (user_id, f"%{store}%", limit, offset))
-    else:
-        cursor.execute("""
-            SELECT * FROM receipts
-            WHERE user_id = ?
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-        """, (user_id, limit, offset))
+    cursor.execute(
+        "SELECT * FROM receipts WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,)
+    )
 
     receipts = cursor.fetchall()
     conn.close()
 
-    return receipts
+    return [dict(r) for r in receipts]
 
 
-# ====================================
-# Get Receipt By ID (READ ONE)
-# ====================================
-def get_receipt_by_id(user_id, receipt_id):
+def delete_receipt_by_id(receipt_id, user_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT * FROM receipts
-        WHERE id = ? AND user_id = ?
-    """, (receipt_id, user_id))
+    cursor.execute(
+        "DELETE FROM receipts WHERE id = ? AND user_id = ?",
+        (receipt_id, user_id)
+    )
 
-    receipt = cursor.fetchone()
-
-    if not receipt:
-        conn.close()
-        return None
-
-    cursor.execute("""
-        SELECT name, quantity, price
-        FROM items
-        WHERE receipt_id = ?
-    """, (receipt_id,))
-
-    items = cursor.fetchall()
-    conn.close()
-
-    return receipt, items
-
-
-# ====================================
-# Update Receipt (UPDATE)
-# ====================================
-def update_receipt(user_id, receipt_id, data):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT * FROM receipts
-        WHERE id = ? AND user_id = ?
-    """, (receipt_id, user_id))
-
-    existing = cursor.fetchone()
-
-    if not existing:
-        conn.close()
-        return False
-
-    cursor.execute("""
-        UPDATE receipts
-        SET store = ?, phone = ?, total = ?, 
-            calculated_subtotal = ?, total_matches = ?
-        WHERE id = ? AND user_id = ?
-    """, (
-        data.get("store"),
-        data.get("phone"),
-        data.get("total"),
-        data.get("calculated_subtotal"),
-        data.get("total_matches"),
-        receipt_id,
-        user_id
-    ))
-
-    # Delete old items
-    cursor.execute("DELETE FROM items WHERE receipt_id = ?", (receipt_id,))
-
-    # Insert updated items
-    for item in data.get("items", []):
-        cursor.execute("""
-            INSERT INTO items (receipt_id, name, quantity, price)
-            VALUES (?, ?, ?, ?)
-        """, (
-            receipt_id,
-            item["name"],
-            item["quantity"],
-            item["price"]
-        ))
+    affected = cursor.rowcount
 
     conn.commit()
     conn.close()
 
-    return True
+    return affected > 0
 
 
-# ====================================
-# Delete Receipt (DELETE)
-# ====================================
-def delete_receipt(user_id, receipt_id):
+def get_total_spending_by_user(user_id):
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT * FROM receipts
-        WHERE id = ? AND user_id = ?
-    """, (receipt_id, user_id))
+    cursor.execute(
+        "SELECT SUM(total) FROM receipts WHERE user_id = ?",
+        (user_id,)
+    )
 
-    existing = cursor.fetchone()
-
-    if not existing:
-        conn.close()
-        return 0
-
-    cursor.execute("DELETE FROM items WHERE receipt_id = ?", (receipt_id,))
-    cursor.execute("""
-        DELETE FROM receipts
-        WHERE id = ? AND user_id = ?
-    """, (receipt_id, user_id))
-
-    conn.commit()
+    total = cursor.fetchone()[0]
     conn.close()
 
-    return 1
-
-
-# ====================================
-# Analytics Summary
-# ====================================
-def get_analytics_summary(user_id):
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-
-    # Total receipts
-    cursor.execute("""
-        SELECT COUNT(*)
-        FROM receipts
-        WHERE user_id = ?
-    """, (user_id,))
-    total_receipts = cursor.fetchone()[0]
-
-    # Total spent
-    cursor.execute("""
-        SELECT COALESCE(SUM(total), 0)
-        FROM receipts
-        WHERE user_id = ?
-    """, (user_id,))
-    total_spent = cursor.fetchone()[0]
-
-    # Average receipt value
-    cursor.execute("""
-        SELECT COALESCE(AVG(total), 0)
-        FROM receipts
-        WHERE user_id = ?
-    """, (user_id,))
-    average_spent = cursor.fetchone()[0]
-
-    # Spending per store
-    cursor.execute("""
-        SELECT store, COALESCE(SUM(total), 0)
-        FROM receipts
-        WHERE user_id = ?
-        GROUP BY store
-        ORDER BY SUM(total) DESC
-    """, (user_id,))
-
-    store_data = cursor.fetchall()
-    conn.close()
-
-    store_summary = [
-        {"store": row[0], "total_spent": round(row[1], 2)}
-        for row in store_data
-    ]
-
-    return {
-        "total_receipts": total_receipts,
-        "total_spent": round(total_spent, 2),
-        "average_receipt_value": round(average_spent, 2),
-        "spending_per_store": store_summary
-    }
+    return total if total else 0.0
