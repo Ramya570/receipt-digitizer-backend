@@ -1,18 +1,12 @@
 import sqlite3
-import os
 
 DB_NAME = "receipts.db"
 
-
-# =========================
-# DATABASE INITIALIZATION
-# =========================
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
 
-    # Users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +15,6 @@ def init_db():
         )
     """)
 
-    # Receipts table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS receipts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,9 +30,7 @@ def init_db():
     conn.close()
 
 
-# =========================
-# USER FUNCTIONS
-# =========================
+# ================= USER FUNCTIONS =================
 
 def create_user(username, password):
     try:
@@ -54,7 +45,6 @@ def create_user(username, password):
         conn.commit()
         conn.close()
         return True
-
     except sqlite3.IntegrityError:
         return False
 
@@ -72,9 +62,7 @@ def get_user_by_username(username):
     return dict(user) if user else None
 
 
-# =========================
-# RECEIPT FUNCTIONS
-# =========================
+# ================= RECEIPT FUNCTIONS =================
 
 def save_receipt(user_id, filename, total):
     conn = sqlite3.connect(DB_NAME)
