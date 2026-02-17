@@ -1,10 +1,11 @@
 import pytesseract
 from PIL import Image
 import cv2
-import numpy as np
 import re
 
-pytesseract.pytesseract.tesseract_cmd = r"D:\receipt_digitizer_backend\tesseract.exe"
+
+# DO NOT hardcode Windows tesseract path here
+# Render/Linux will use system-installed tesseract
 
 
 def extract_text_from_image(image_path):
@@ -50,12 +51,10 @@ def parse_receipt(text):
         "items": []
     }
 
-    # -------- STORE NAME (Better logic) --------
-        # -------- STORE NAME (Smarter Logic) --------
+    # ---------- STORE NAME ----------
     for line in lines:
         lower = line.lower()
 
-        # Skip address-like or system lines
         if (
             re.search(r"\d", line[:3]) or
             "," in line or
@@ -69,17 +68,17 @@ def parse_receipt(text):
         data["store"] = line
         break
 
-
-    # -------- PHONE NUMBER (Improved Regex) --------
-    phone_match = re.search(r"\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2,4}(?:[\s\-]?\d{2,4})?", text)
+    # ---------- PHONE ----------
+    phone_match = re.search(
+        r"\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{2,4}(?:[\s\-]?\d{2,4})?",
+        text
+    )
     if phone_match:
         data["phone"] = phone_match.group()
 
-    # -------- SUBTOTAL / TAX / TOTAL --------
-    for i, line in enumerate(lines):
+    # ---------- SUBTOTAL / TAX / TOTAL ----------
+    for line in lines:
         lower = line.lower()
-
-        # If amount is on same line
         amounts = re.findall(r"\d+\.\d{2}", line)
 
         if "subtotal" in lower and amounts:
@@ -91,7 +90,7 @@ def parse_receipt(text):
         elif "total" in lower and amounts:
             data["total"] = amounts[-1]
 
-        # -------- ITEM EXTRACTION (Combine Duplicates) --------
+    # ---------- ITEMS ----------
     temp_items = {}
 
     for line in lines:
@@ -113,24 +112,47 @@ def parse_receipt(text):
                 }
 
     data["items"] = list(temp_items.values())
-        # -------- AUTO CALCULATE SUBTOTAL --------
-    calculated_subtotal = 0
 
+    # ---------- AUTO CALCULATE SUBTOTAL ----------
+    calculated_subtotal = 0
     for item in data["items"]:
         calculated_subtotal += item["price"] * item["quantity"]
 
     data["calculated_subtotal"] = round(calculated_subtotal, 2)
 
-    # -------- VALIDATE TOTAL --------
+    # ---------- VALIDATE TOTAL ----------
     if data["total"]:
         try:
             total_value = float(data["total"])
-            data["total_matches"] = round(total_value, 2) == round(calculated_subtotal, 2)
+            data["total_matches"] = (
+                round(total_value, 2) ==
+                round(calculated_subtotal, 2)
+            )
         except:
             data["total_matches"] = False
     else:
         data["total_matches"] = False
 
-
     return data
 
+
+# =====================================================
+# 🔥 THIS WAS MISSING — MAIN FUNCTION USED BY app.py
+# =====================================================
+
+def extract_receipt_data(image_path):
+    text = extract_text_from_image(image_path)
+
+    if text.startswith("OCR Error"):
+        return {
+            "success": False,
+            "error": text
+        }
+
+    structured_data = parse_receipt(text)
+
+    return {
+        "success": True,
+        "raw_text": text,
+        "structured_data": structured_data
+    }
