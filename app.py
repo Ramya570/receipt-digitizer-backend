@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import (
@@ -7,14 +8,15 @@ from flask_jwt_extended import (
     jwt_required,
     get_jwt_identity
 )
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
-from datetime import timedelta
+
+# =============================
+# APP CONFIGURATION
+# =============================
 
 app = Flask(__name__)
-
-# =========================
-# CONFIGURATION
-# =========================
+CORS(app)   # Enable CORS for frontend connection
 
 app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
     "DATABASE_URL",
@@ -22,6 +24,7 @@ app.config["SQLALCHEMY_DATABASE_URI"] = os.environ.get(
 )
 
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
 app.config["JWT_SECRET_KEY"] = os.environ.get(
     "JWT_SECRET_KEY",
     "super-secret-key"
@@ -36,18 +39,18 @@ app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 
-# =========================
+# =============================
 # DATABASE MODEL
-# =========================
+# =============================
 
 class Receipt(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_email = db.Column(db.String(120), nullable=False)
     filename = db.Column(db.String(200), nullable=False)
 
-# =========================
+# =============================
 # ROUTES
-# =========================
+# =============================
 
 @app.route("/")
 def home():
@@ -56,9 +59,9 @@ def home():
     })
 
 
-# -------------------------
-# LOGIN (Demo Login)
-# -------------------------
+# -----------------------------
+# LOGIN ROUTE
+# -----------------------------
 @app.route("/login", methods=["POST"])
 def login():
 
@@ -72,7 +75,7 @@ def login():
 
     email = data["email"]
 
-    access_token = create_access_token(identity=email)
+    access_token = create_access_token(identity=str(email))
 
     return jsonify({
         "success": True,
@@ -80,14 +83,13 @@ def login():
     })
 
 
-# -------------------------
+# -----------------------------
 # UPLOAD RECEIPT
-# -------------------------
+# -----------------------------
 @app.route("/upload", methods=["POST"])
 @jwt_required()
 def upload_receipt():
 
-    # Check file exists
     if "file" not in request.files:
         return jsonify({
             "success": False,
@@ -123,9 +125,9 @@ def upload_receipt():
     })
 
 
-# -------------------------
+# -----------------------------
 # GET RECEIPTS
-# -------------------------
+# -----------------------------
 @app.route("/receipts", methods=["GET"])
 @jwt_required()
 def get_receipts():
@@ -150,9 +152,9 @@ def get_receipts():
     })
 
 
-# =========================
-# MAIN
-# =========================
+# =============================
+# RUN APP
+# =============================
 
 if __name__ == "__main__":
     with app.app_context():
